@@ -5,7 +5,7 @@ local invUtils = require("invUtils")
 ---@field items string[]
 
 local side, processorType = ...
-if not side and processorType then
+if not (side and processorType) then
     error("Usage: addRecipeType <side> <processorType>")
 end
 

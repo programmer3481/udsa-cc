@@ -1,7 +1,7 @@
 local invUtils = require("invUtils")
 
 local original, aliasName = ...
-if not original and aliasName then
+if not (original and aliasName) then
     error("Usage: addRecipeType <original> <aliasName>")
 end
 

@@ -125,6 +125,10 @@ local function getOrCacheInventoryId(peripheralName)
     return cachedId
 end
 
+local function getRecipeTypeId(id) -- removes + (use like asm+ for more patprovs)
+    return string.gsub(id, "+", "")
+end
+
 local function scanInventories()
     local scannedInputs = {}
     local scannedNc = nil
@@ -137,7 +141,7 @@ local function scanInventories()
                 if invId == "nc" and not scannedNc then
                     scannedNc = {}
                     invUtils.enqueue(function () scannedNc = inv.list() end)
-                elseif recipeTypes[invId] and not invalidInputs[invId] then
+                elseif recipeTypes[getRecipeTypeId(invId)] and not invalidInputs[invId] then
                     local scanned = {{}, {}}
                     scannedInputs[invId] = scanned
                     invUtils.enqueueScanInv(inv, scanned)
@@ -243,15 +247,15 @@ local function loop()
     end
 
     local messageQueue = {}
-    local inputErrors = {}
     local processorErrors = {}
     local ncErrors = {}
 
     -- 1. all inputs to available processors
     for inputId, input in pairs(scannedInputs) do
-        if recipeTypeProcessors[inputId] then
-            local processorId = recipeTypeProcessors[inputId]
-            invUtils.enqueueMoveSlots(invPeripheralCache[inputId], input, invPeripheralCache[processorId], inputErrors, processorErrors)
+        local recipeTypeId = getRecipeTypeId(inputId)
+        if recipeTypeProcessors[recipeTypeId] then
+            local processorId = recipeTypeProcessors[recipeTypeId]
+            invUtils.enqueueMoveSlots(invPeripheralCache[inputId], input, invPeripheralCache[processorId], invalidInputs, processorErrors)
             table.insert(messageQueue, "cn load "..processorId)
             processors[processorId].state = PROCESSOR_STATE.active
             scannedInputs[inputId] = nil
@@ -260,17 +264,18 @@ local function loop()
 
     -- 2. request recipe types
     for inputId, input in pairs(scannedInputs) do
-        if not loadedRecipeTypes[inputId] then
+        local recipeTypeId = getRecipeTypeId(inputId)
+        if not loadedRecipeTypes[recipeTypeId] then
             validProcessorCycle = true
             for processorId, processor in pairs(processors) do
-                if processor.state == PROCESSOR_STATE.empty and processorId:find("^"..recipeTypes[inputId].processor) ~= nil then
-                    local nc = requestNc(scannedNc, ncSlotCache, inputId)
+                if processor.state == PROCESSOR_STATE.empty and processorId:find("^"..recipeTypes[recipeTypeId].processor) ~= nil then
+                    local nc = requestNc(scannedNc, ncSlotCache, recipeTypeId)
                     if nc then
                         print("loading "..inputId.." to "..processorId.."...")
                         invUtils.enqueueMoveSlots(invPeripheralCache["nc"], {nc, {}}, invPeripheralCache[processorId], ncErrors, processorErrors)
                         table.insert(messageQueue, "cn loadnc "..processorId)
                         processors[processorId].state = PROCESSOR_STATE.loadnc
-                        processors[processorId].recipeType = inputId
+                        processors[processorId].recipeType = recipeTypeId
                         break
                     end
                 end

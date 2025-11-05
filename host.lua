@@ -116,6 +116,9 @@ local function getOrCacheInventoryId(peripheralName)
         end
         if idItem then
             cachedId = idItem.displayName--[[@as string]]
+            if invPeripheralCache[cachedId] then
+                printError("Warning: duplicate inventory id found: "..cachedId)
+            end
         else
             cachedId = ""
         end

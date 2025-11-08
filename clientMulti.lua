@@ -5,34 +5,12 @@ local CRAFTNET_SEND = 3481
 local CRAFTNET_RECIEVE = 3482
 local POLL_DELAY = 0.1
 
-local machines, machineCount
-local storage, craftNet, formation, output
+local storage, craftNet, formation, bus
 local id
-local currentMachine = nil
-local currentMachineName = ""
-local currentMachineType = ""
 local ncSlotsCache = {}
 
 local displaySide
 local active = false
-
-local function getMachines()
-    local machinesFile = fs.open(shell.resolve("machines.txt"), "r")
-    if not machinesFile then
-        error("Could not open machine list file")
-    end
-    local machines = {}
-    local machineCount = 0
-    while true do
-        local line = machinesFile.readLine()
-        if not line then break end
-
-        local machineDef = strings.split(line, "%s+")
-        machines[machineDef[1]] = {maxItemIn = tonumber(machineDef[2]), maxFluidIn = tonumber(machineDef[3])}
-        machineCount = machineCount + 1
-    end
-    return machines, machineCount
-end
 
 local function getPeripherals()
     local storage = nil
@@ -40,6 +18,12 @@ local function getPeripherals()
         storage = invUtils.wrapInvSafe("top")
     end
     if not storage then error("Input Storage not found") end
+
+    local bus = nil
+    if peripheral.hasType("back", "inventory") then
+        bus = invUtils.wrapInvSafe("top")
+    end
+    if not bus then error("Input Storage not found") end
 
     local craftNet = nil
     local formation = nil
@@ -53,13 +37,7 @@ local function getPeripherals()
     ---@cast craftNet ccTweaked.peripheral.WiredModem?
     if not (craftNet and formation) then error("CraftNet or formation plane interface not found") end
 
-    local output = nil
-    if peripheral.hasType("bottom", "inventory") then
-        output = invUtils.wrapInvSafe("bottom")
-    end
-    if not output then error("Output interface not found") end
-
-    return storage, craftNet, formation, output
+    return storage, craftNet, formation, bus
 end
 
 ---@diagnostic disable: undefined-field
@@ -90,149 +68,101 @@ end
 local function updateDisplay()
     redstone.setOutput("front", active)
     if displaySide then
-        if currentMachineName == "" then
-            storage.setBufferedText(displaySide, 1, "{color white empty}")
-            return
-        end
         local activityText = "{color white idle}"
         if active then
             activityText = "{color green active}"
         end
-        storage.setBufferedText(displaySide, 1, "{color white "..currentMachineType.."}\\n"..activityText)
+        storage.setBufferedText(displaySide, 1, activityText)
     end
 end
 ---@diagnostic enable: undefined-field
 
-local function getMachineType(name)
-    local sep = string.find(name, "_")
-    if not sep then return "" end
-    return string.sub(name, sep+1)
-end
-
 local function loadnc()
-    if peripheral.hasType("back", "inventory") then
-        error("Recieved command to load nonconsumables, but a machine is already loaded")
-    end
-
     local items = storage.list()
     items[1] = nil
-    local machineSlot = nil
-    for slot, item in pairs(items) do
-        local machineType = getMachineType(item.name)
-        if machines[machineType] and item.count == 1 then
-            currentMachineName = item.name
-            currentMachineType = machineType
-            updateDisplay()
-            machineSlot = slot
-            break
-        end
-    end
-    if not machineSlot then
-        error("Recieved command to load nonconsumables, no machine given")
-    end
-    items[machineSlot] = nil
-    storage.pushItems(peripheral.getName(formation), machineSlot)
-
-    while true do
-        local e, side = os.pullEvent("peripheral")
-        if side == "back" then break end
-    end
-    currentMachine = invUtils.wrapInvSafe("back")
-    if not currentMachine then
-        error("Machine connection error")
-    end
 
     local transferErrors = {}
-    invUtils.enqueueMoveSlots(storage, {items, {}}, currentMachine, {}, transferErrors)
+    invUtils.enqueueMoveSlots(storage, {items, {}}, bus, {}, transferErrors)
     invUtils.flush()
     if transferErrors["back"] then
-        error("Failed to insert nonconsumables into machine")
+        error("Failed to insert nonconsumables into input bus")
     end
-    ncSlotsCache = currentMachine.list()
+    ncSlotsCache = bus.list()
 end
 
 local function load()
-    if not currentMachine then
-        error("Recieved command to load items to machine, no machine is present")
-    end
-    local toMove = {}
-    invUtils.enqueueScanInv(storage, toMove)
-    invUtils.flush()
+    local toMove = storage.list()
 
-    toMove[1][1] = nil
+    toMove[1] = nil
     local transferErrors = {}
-    invUtils.enqueueMoveSlots(storage, toMove, currentMachine, {}, transferErrors)
+    invUtils.enqueueMoveSlots(storage, {toMove, {}}, bus, {}, transferErrors)
     invUtils.flush()
     if transferErrors["back"] then
-        error("Failed to insert items/fluids into machine")
+        error("Failed to insert items into input bus")
+    end
+    while true do
+        local tanks = storage.tanks()
+        if next(tanks) == nil then
+            sleep(0.25) -- give some time for interface -> input hatches?
+            break
+        end
+        sleep(POLL_DELAY)
     end
     active = true
     updateDisplay()
 end
 
-local function isEmpty(machineInv)
-    for itemSlot, item in pairs(machineInv[1]) do
-        if itemSlot <= machines[currentMachineType].maxItemIn then
-            return false
-        end
-    end
-    for fluidSlot, fluid in pairs(machineInv[2]) do
-        if fluidSlot <= machines[currentMachineType].maxFluidIn then
-            return false
-        end
-    end
-    return true
+local function isEmpty(busInv)
+    return not redstone.getInput(peripheral.getName(craftNet)) and next(busInv) == nil
 end
 
-local function isActive(machineInv) -- also flushes output
-    if not currentMachine then
-        error("Machine connection error")
-    end
-    if currentMachine.isActive() == false then
-        local transferOutErrors = {}
-        invUtils.enqueueMoveSlots(currentMachine, machineInv, output, transferOutErrors, {})
-        invUtils.flush()
-        -- only case when machine is not active and everything successfully transfers is when work is completely done.
-        -- (except for when the output interface cannot fit, can be handled in the same way so don't care)
-        if not transferOutErrors["back"] then
-            return currentMachine.isActive() -- failsafe
-        end
-    end
-    return true
+local function isActive(busInv)
+    return redstone.getInput("bottom") or not isEmpty(busInv)
 end
 
 local function waitInactive()
-    if not currentMachine then
-        error("Machine connection error")
-    end
     while active do
         sleep(POLL_DELAY)
----@diagnostic disable-next-line: undefined-field
-        local machineInv = {}
-        invUtils.enqueueScanInv(currentMachine, machineInv)
-        invUtils.flush()
+        local busInv = bus.list()
         for slot, item in pairs(ncSlotsCache) do
-            machineInv[1][slot] = nil
+            busInv[slot] = nil
         end
-        active = isActive(machineInv) or not isEmpty(machineInv)
+        active = isActive(busInv)
         updateDisplay()
     end
 end
 
 local function unloadnc()
     redstone.setOutput("top", true)
+    local items = {}
     while true do
         sleep(POLL_DELAY)
-        local items = storage.list()
+        items = storage.list()
         items[1] = nil
         if next(items) ~= nil then
             break
         end
     end
     redstone.setOutput("top", false)
-    currentMachineName = ""
-    currentMachineType = ""
-    currentMachine = nil
+
+    local busSlot = nil
+    for slot, item in pairs(items) do
+        if item.name:find("input_bus$") ~= nil then
+            busSlot = slot
+        end
+    end
+    if not busSlot then
+        error("Failed to collect input bus")
+    end
+    storage.pushItems(peripheral.getName(formation), busSlot, 1)
+    while true do
+        local e, side = os.pullEvent("peripheral")
+        if side == "back" then break end
+    end
+    bus = invUtils.wrapInvSafe("back")
+    if not bus then
+        error("Input bus connection error")
+    end
     ncSlotsCache = {}
     updateDisplay()
 end
@@ -256,40 +186,33 @@ end
 local function handleMessage(msg)
     if msg[1] == "cn" and msg[2] == "ready" then
         print("Resetting...")
-        if peripheral.hasType("back", "inventory") then
-            print("Unloading previously loaded machine")
-            load()
-            waitInactive()
-            unloadnc()
-        end
+        load()
+        waitInactive()
+        unloadnc()
         craftNet.transmit(CRAFTNET_RECIEVE, 0, "cn ready "..id)
     elseif msg[1] == "cn" and msg[3] == id then
         if msg[2] == "loadnc" then
             loadnc()
-            print("Machine loaded: "..currentMachineName)
             craftNet.transmit(CRAFTNET_RECIEVE, 0, "cn loadnc "..id)
         elseif msg[2] == "load" then
             load()
-            if not currentMachine then error("Machine connection error") end
             local availableSent = false
             while active do
                 local doLoad = false
                 parallel.waitForAll(function () doLoad = waitMessage(POLL_DELAY) end,
                 function ()
-                    local machineInv = {}
-                    invUtils.enqueueScanInv(currentMachine, machineInv)
-                    invUtils.flush()
+                    local busInv = bus.list()
                     for slot, item in pairs(ncSlotsCache) do
-                        machineInv[1][slot] = nil
+                        busInv[slot] = nil
                     end
 
-                    local empty = isEmpty(machineInv)
+                    local empty = isEmpty(busInv)
                     if empty and not availableSent then
                         craftNet.transmit(CRAFTNET_RECIEVE, 0, "cn available "..id)
                         availableSent = true
                     end
 
-                    active = isActive(machineInv) or not empty
+                    active = isActive(busInv)
                     updateDisplay()
                 end)
 
@@ -311,16 +234,10 @@ local function run()
 
     redstone.setOutput("top", false)
     redstone.setOutput("front", false)
-    if peripheral.hasType("back", "inventory") then
-        currentMachine = invUtils.wrapInvSafe("back")
-        if not currentMachine then
-            error("Machine connection error")
-        end
-        ncSlotsCache = currentMachine.list()
-        load()
-        waitInactive()
-        unloadnc()
-    end
+    ncSlotsCache = bus.list()
+    load()
+    waitInactive()
+    unloadnc()
 
     updateDisplay()
     print("Setup complete, awaiting commands...")
@@ -338,11 +255,8 @@ local function run()
     end
 end
 
-print("Loading machine definition list...")
-machines, machineCount = getMachines()
-print("Loaded "..machineCount.." machines.")
 print("Connecting periphrals...")
-storage, craftNet, formation, output = getPeripherals()
+storage, craftNet, formation, bus = getPeripherals()
 displaySide = getDisplaySide()
 if displaySide then
     print("Display found: "..displaySide)

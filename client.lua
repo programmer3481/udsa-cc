@@ -26,10 +26,11 @@ local function getMachines()
     while true do
         local line = machinesFile.readLine()
         if not line then break end
-
-        local machineDef = strings.split(line, "%s+")
-        machines[machineDef[1]] = {maxItemIn = tonumber(machineDef[2]), maxFluidIn = tonumber(machineDef[3])}
-        machineCount = machineCount + 1
+        if line:find("^%s*$") == nil then
+            local machineDef = strings.split(line, "%s+")
+            machines[machineDef[1]] = {maxItemIn = tonumber(machineDef[2]), maxFluidIn = tonumber(machineDef[3])}
+            machineCount = machineCount + 1
+        end
     end
     return machines, machineCount
 end
@@ -338,6 +339,7 @@ local function run()
     end
 end
 
+sleep(1)
 print("Loading machine definition list...")
 machines, machineCount = getMachines()
 print("Loaded "..machineCount.." machines.")

@@ -21,6 +21,8 @@ local PROCESSOR_STATE = {
 
 local recipeTypes
 local recipeTypeCount
+-- 'dummy processors', basically single recipeType processor with no computer
+local fakeProcessors -- processor id - recipeType
 local craftNet
 local idleCycles
 local recieveQueue = {}
@@ -29,6 +31,7 @@ local recieveQueue = {}
 ---@field state processorState
 ---@field idleCycles integer
 ---@field recipeType string
+---@field fake boolean
 
 ---@type table<string, Processor>
 local processors = {}
@@ -39,7 +42,6 @@ local invIdCache = {} -- peripheral id -> craftnet id
 local invPeripheralCache = {} -- craftnet id -> peripheral
 ---@type table<string, boolean>
 local invalidInputs = {} -- set
-
 
 
 local function getRecipeTypes()
@@ -58,6 +60,24 @@ local function getRecipeTypes()
         recipeTypes = {}
     end
     return recipeTypes
+end
+
+local function getFakeProcessors()
+    local fakeProcessorsFile = fs.open(shell.resolve("fakeProcessors.txt"), "r")
+    if not fakeProcessorsFile then
+        print("Could not read fakeProcessors list")
+        return {}
+    end
+    local fakeProcessors = {}
+    while true do
+        local line = fakeProcessorsFile.readLine()
+        if not line then break end
+        if line:find("^%s*$") == nil then
+            local processorDef = strings.split(line, "%s+")
+            fakeProcessors[processorDef[1]] = processorDef[2]
+        end
+    end
+    return fakeProcessors
 end
 
 local function getCraftNet()
@@ -93,7 +113,7 @@ local function handleMessages()
                 if msg[2] == "ready" then
                     print("Recipe processor connected: "..msg[3])
                 end
-                processors[msg[3]] = {state = PROCESSOR_STATE.ncpending, idleCycles = 0, recipeType = ""}
+                processors[msg[3]] = {state = PROCESSOR_STATE.ncpending, idleCycles = 0, recipeType = "", fake = false}
             elseif msg[2] == "loadnc" or msg[2] == "load" then
                 processors[msg[3]].state = PROCESSOR_STATE.idle
                 processors[msg[3]].idleCycles = 0
@@ -139,6 +159,7 @@ local function scanInventories()
     local scannedInputs = {}
     local scannedNc = nil
     local scannedPendingNc = {}
+    local scannedFakeActive = {}
     for i, peripheralName in ipairs(craftNet.getNamesRemote()) do
         if peripheral.hasType(peripheralName, "inventory") then
             local invId = getOrCacheInventoryId(peripheralName)
@@ -154,6 +175,16 @@ local function scanInventories()
                 elseif processors[invId] and processors[invId].state == PROCESSOR_STATE.ncpending then
                     scannedPendingNc[invId] = {}
                     invUtils.enqueue(function () scannedPendingNc[invId] = inv.list() end)
+                elseif fakeProcessors[invId] then -- also update fake processor states
+                    if not processors[invId] then
+                        processors[invId] = {state = PROCESSOR_STATE.active, idleCycles = 0, recipeType = fakeProcessors[invId], fake = true}
+                        print("Recipe processor connected (fake processor): "..invId)
+                    end
+                    if processors[invId].state == PROCESSOR_STATE.active then
+                        local scanned = {{}, {}}
+                        scannedFakeActive[invId] = scanned
+                        invUtils.enqueueScanInv(inv, scanned)
+                    end
                 end
             end
         end
@@ -171,6 +202,12 @@ local function scanInventories()
     end
     for processorId, processorScan in pairs(scannedPendingNc) do
         processorScan[1] = nil
+    end
+    for fakeProcessorId, processorScan in pairs(scannedFakeActive) do
+        processorScan[1][1] = nil
+        if next(processorScan[1]) == nil and next(processorScan[2]) == nil then
+            processors[fakeProcessorId].state = PROCESSOR_STATE.idle
+        end
     end
     return scannedInputs, scannedNc, scannedPendingNc
 end
@@ -242,7 +279,7 @@ local function requestNc(scannedNc, ncSlotCache, recipeId)
 end
 
 local function loop()
-    local validProcessorCycle = false
+    local waitedProcessorGroups = {} -- set
     local scannedInputs, scannedNc, scannedPendingNc = scanInventories() -- ensure cache, also assume the scanned inventories exist
     local ncSlotCache = getNcSlots(scannedNc)
     checkProcessorInvs() -- ensure processor inventories for non-invalid processors
@@ -262,7 +299,9 @@ local function loop()
         if recipeTypeProcessors[recipeTypeId] then
             local processorId = recipeTypeProcessors[recipeTypeId]
             invUtils.enqueueMoveSlots(invPeripheralCache[inputId], input, invPeripheralCache[processorId], invalidInputs, processorErrors)
-            table.insert(messageQueue, "cn load "..processorId)
+            if not processors[processorId].fake then
+                table.insert(messageQueue, "cn load "..processorId)
+            end
             processors[processorId].state = PROCESSOR_STATE.active
             recipeTypeProcessors[recipeTypeId] = nil
             scannedInputs[inputId] = nil
@@ -273,7 +312,7 @@ local function loop()
     for inputId, input in pairs(scannedInputs) do
         local recipeTypeId = getRecipeTypeId(inputId)
         if not loadedRecipeTypes[recipeTypeId] then
-            validProcessorCycle = true
+            waitedProcessorGroups[recipeTypes[recipeTypeId].processor] = true
             for processorId, processor in pairs(processors) do
                 if processor.state == PROCESSOR_STATE.empty and processorId:find("^"..recipeTypes[recipeTypeId].processor) ~= nil then
                     local nc = requestNc(scannedNc, ncSlotCache, recipeTypeId)
@@ -292,14 +331,15 @@ local function loop()
     end
 
     -- 3. unload idle processors
-    if validProcessorCycle then
-        for processorId, processor in pairs(processors) do
-            if processor.state == PROCESSOR_STATE.idle then
+    for processorId, processor in pairs(processors) do
+        for processorGroup, b in pairs(waitedProcessorGroups) do
+            if processor.state == PROCESSOR_STATE.idle and not processor.fake and processorId:find("^"..processorGroup) ~= nil then
                 processor.idleCycles = processor.idleCycles + 1
                 if processor.idleCycles > PROCESSOR_IDLE_CYCLE_LIMIT then
                     table.insert(messageQueue, "cn unloadnc "..processorId)
                     processors[processorId].state = PROCESSOR_STATE.unloadnc
                 end
+                break
             end
         end
     end
@@ -350,6 +390,7 @@ for recipeName, recipeType in pairs(recipeTypes) do
     recipeTypeCount = recipeTypeCount + 1
 end
 print(recipeTypeCount.." recipeTypes loaded")
+fakeProcessors = getFakeProcessors()
 craftNet = getCraftNet()
 print("CraftNet connection found: "..peripheral.getName(craftNet))
 

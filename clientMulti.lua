@@ -21,7 +21,7 @@ local function getPeripherals()
 
     local bus = nil
     if peripheral.hasType("back", "inventory") then
-        bus = invUtils.wrapInvSafe("top")
+        bus = invUtils.wrapInvSafe("back")
     end
     if not bus then error("Input Storage not found") end
 

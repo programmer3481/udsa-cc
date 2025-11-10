@@ -320,7 +320,8 @@ local function loop()
     for inputId, input in pairs(scannedInputs) do
         local recipeTypeId = getRecipeTypeId(inputId)
         if not availableRecipeTypes[recipeTypeId] and 
-        (not recipeTypes[recipeTypeId].limit or loadedRecipeTypeCount[recipeTypeId] < recipeTypes[recipeTypeId].limit) then
+        (not recipeTypes[recipeTypeId].limit or not loadedRecipeTypeCount[recipeTypeId] or
+            loadedRecipeTypeCount[recipeTypeId] < recipeTypes[recipeTypeId].limit) then
             waitedProcessorGroups[recipeTypes[recipeTypeId].processor] = true
             for processorId, processor in pairs(processors) do
                 if processor.state == PROCESSOR_STATE.empty and processorId:find("^"..recipeTypes[recipeTypeId].processor) ~= nil then

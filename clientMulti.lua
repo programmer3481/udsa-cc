@@ -133,6 +133,9 @@ local function waitInactive()
 end
 
 local function unloadnc()
+    if next(ncSlotsCache) == nil then -- bus is empty (loaded recipeType had no nonconsumables)
+        return
+    end
     redstone.setOutput("top", true)
     local items = {}
     while true do
@@ -164,7 +167,6 @@ local function unloadnc()
         error("Input bus connection error")
     end
     ncSlotsCache = {}
-    updateDisplay()
 end
 
 local function waitMessage(timeout)

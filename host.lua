@@ -245,16 +245,24 @@ local function scanProcessors()
     ---@type table<string, string>
     local recipeTypeProcessors = {}
     ---@type table<string, boolean>
-    local loadedRecipeTypes = {}
+    local availableRecipeTypes = {}
+    ---@type table<string, integer>
+    local loadedRecipeTypeCount = {}
     for processorId, processor in pairs(processors) do
         if processor.state == PROCESSOR_STATE.idle or processor.state == PROCESSOR_STATE.available then
             recipeTypeProcessors[processor.recipeType] = processorId
-            loadedRecipeTypes[processor.recipeType] = true
+            availableRecipeTypes[processor.recipeType] = true
         elseif processor.state == PROCESSOR_STATE.loadnc then
-            loadedRecipeTypes[processor.recipeType] = true
+            availableRecipeTypes[processor.recipeType] = true
+        end
+        if processor.state ~= PROCESSOR_STATE.invalid then
+            if not loadedRecipeTypeCount[processor.recipeType] then
+                loadedRecipeTypeCount[processor.recipeType] = 0
+            end
+            loadedRecipeTypeCount[processor.recipeType] = loadedRecipeTypeCount[processor.recipeType] + 1
         end
     end
-    return recipeTypeProcessors, loadedRecipeTypes
+    return recipeTypeProcessors, availableRecipeTypes, loadedRecipeTypeCount
 end
 
 local function requestNc(scannedNc, ncSlotCache, recipeId)
@@ -283,7 +291,7 @@ local function loop()
     local scannedInputs, scannedNc, scannedPendingNc = scanInventories() -- ensure cache, also assume the scanned inventories exist
     local ncSlotCache = getNcSlots(scannedNc)
     checkProcessorInvs() -- ensure processor inventories for non-invalid processors
-    local recipeTypeProcessors, loadedRecipeTypes = scanProcessors() -- caches
+    local recipeTypeProcessors, availableRecipeTypes, loadedRecipeTypeCount = scanProcessors() -- caches
     idleCycles = idleCycles + 1
     if next(scannedInputs) ~= nil then
         idleCycles = 0
@@ -311,7 +319,8 @@ local function loop()
     -- 2. request recipe types
     for inputId, input in pairs(scannedInputs) do
         local recipeTypeId = getRecipeTypeId(inputId)
-        if not loadedRecipeTypes[recipeTypeId] then
+        if not availableRecipeTypes[recipeTypeId] and 
+        (not recipeTypes[recipeTypeId].limit or loadedRecipeTypeCount[recipeTypeId] < recipeTypes[recipeTypeId].limit) then
             waitedProcessorGroups[recipeTypes[recipeTypeId].processor] = true
             for processorId, processor in pairs(processors) do
                 if processor.state == PROCESSOR_STATE.empty and processorId:find("^"..recipeTypes[recipeTypeId].processor) ~= nil then
@@ -322,7 +331,7 @@ local function loop()
                         table.insert(messageQueue, "cn loadnc "..processorId)
                         processors[processorId].state = PROCESSOR_STATE.loadnc
                         processors[processorId].recipeType = recipeTypeId
-                        loadedRecipeTypes[recipeTypeId] = true
+                        availableRecipeTypes[recipeTypeId] = true
                         break
                     end
                 end

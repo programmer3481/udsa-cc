@@ -3,6 +3,7 @@ local invUtils = require("invUtils")
 ---@class RecipeType
 ---@field processor string
 ---@field items string[]
+---@field limit integer?
 
 local side, processorType = ...
 if not (side and processorType) then
@@ -29,8 +30,17 @@ for slot, item in pairs(inputInv.list()) do
     table.insert(recipeType.items, getNcId(item))
 end
 recipeType.processor = processorType
+write("Processor count limit (skip for unlimited): ")
+local limitRead = read()
+local limit = nil
+if limitRead ~= "" then
+    limit = tonumber(limitRead)
+end
+recipeType.limit = limit
 write("Recipe type name: ")
 local recipeTypeName = read()
+
+
 
 
 local recipeTypes

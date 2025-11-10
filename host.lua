@@ -341,15 +341,20 @@ local function loop()
 
     -- 3. unload idle processors
     for processorId, processor in pairs(processors) do
+        local waitedOn = false
         for processorGroup, b in pairs(waitedProcessorGroups) do
             if processor.state == PROCESSOR_STATE.idle and not processor.fake and processorId:find("^"..processorGroup) ~= nil then
+                waitedOn = true
                 processor.idleCycles = processor.idleCycles + 1
                 if processor.idleCycles > PROCESSOR_IDLE_CYCLE_LIMIT then
                     table.insert(messageQueue, "cn unloadnc "..processorId)
-                    processors[processorId].state = PROCESSOR_STATE.unloadnc
+                    processor.state = PROCESSOR_STATE.unloadnc
                 end
                 break
             end
+        end
+        if not waitedOn then
+            processor.idleCycles = 0
         end
     end
 

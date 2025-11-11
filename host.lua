@@ -115,7 +115,7 @@ local function handleMessages()
                 end
                 processors[msg[3]] = {state = PROCESSOR_STATE.ncpending, idleCycles = 0, recipeType = "", fake = false}
             elseif msg[2] == "loadnc" or
-            (msg[2] == "load" and processors[msg[3]].state == "available") then -- rare case where machine is loaded between receiving available and load
+            (msg[2] == "load" and processors[msg[3]].state == PROCESSOR_STATE.available) then -- rare case where machine is loaded between receiving available and load
                 processors[msg[3]].state = PROCESSOR_STATE.idle
                 processors[msg[3]].idleCycles = 0
             elseif msg[2] == "available" then

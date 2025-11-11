@@ -1,3 +1,4 @@
+local pretty = require("cc.pretty")
 local strings = require("cc.strings")
 local invUtils = require("invUtils")
 
@@ -117,7 +118,7 @@ local function isEmpty(busInv)
 end
 
 local function isActive(busInv)
-    return redstone.getInput("bottom") or not isEmpty(busInv)
+    return redstone.getInput("bottom")
 end
 
 local function waitInactive()
@@ -127,7 +128,7 @@ local function waitInactive()
         for slot, item in pairs(ncSlotsCache) do
             busInv[slot] = nil
         end
-        active = isActive(busInv)
+        active = isActive(busInv) or not isEmpty(busInv)
         updateDisplay()
     end
 end
@@ -214,7 +215,7 @@ local function handleMessage(msg)
                         availableSent = true
                     end
 
-                    active = isActive(busInv)
+                    active = isActive(busInv) or not empty
                     updateDisplay()
                 end)
 

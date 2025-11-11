@@ -215,7 +215,10 @@ local function waitInactive()
         for slot, item in pairs(ncSlotsCache) do
             machineInv[1][slot] = nil
         end
-        active = isActive(machineInv) or not isEmpty(machineInv)
+        active = isActive(machineInv)
+        if currentMachineType ~= "" then
+            active = active or not isEmpty(machineInv)
+        end
         updateDisplay()
     end
 end

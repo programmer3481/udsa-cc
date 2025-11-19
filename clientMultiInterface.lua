@@ -5,7 +5,7 @@ local CRAFTNET_SEND = 3481
 local CRAFTNET_RECIEVE = 3482
 local POLL_DELAY = 0.1
 
-local storage, craftNet, bridge, bus
+local storage, craftNet, formation, bus
 local id
 local ncSlotsCache = {}
 
@@ -29,18 +29,18 @@ local function getPeripherals()
     if not bus then error("Input Storage not found") end
 
     local craftNet = nil
-    local bridge = nil
-    if peripheral.hasType("left", "modem") and peripheral.hasType("right", "meBridge") then
+    local formation = nil
+    if peripheral.hasType("left", "modem") and peripheral.hasType("right", "inventory") then
         craftNet = peripheral.wrap("left")
-        bridge = peripheral.wrap("right")
-    elseif peripheral.hasType("right", "modem") and peripheral.hasType("left", "meBridge") then
+        formation = invUtils.wrapInvSafe("right")
+    elseif peripheral.hasType("right", "modem") and peripheral.hasType("left", "inventory") then
         craftNet = peripheral.wrap("right")
-        bridge = peripheral.wrap("left")
+        formation = invUtils.wrapInvSafe("left")
     end
     ---@cast craftNet ccTweaked.peripheral.WiredModem?
-    if not (craftNet and bridge) then error("CraftNet or formation plane interface not found") end
+    if not (craftNet and formation) then error("CraftNet or formation plane interface not found") end
 
-    return storage, craftNet, bridge, bus
+    return storage, craftNet, formation, bus
 end
 
 ---@diagnostic disable: undefined-field
@@ -101,28 +101,28 @@ local function load()
     toMove[1][1] = nil
     local transferErrors = {}
     invUtils.enqueueMoveSlots(storage, {toMove[1], {}}, bus, transferErrors, {})
----@diagnostic disable-next-line: param-type-mismatch
-    invUtils.enqueueMoveSlots(storage, {{}, toMove[2]}, bridge, transferErrors, {})
+    invUtils.enqueueMoveSlots(storage, {{}, toMove[2]}, formation, transferErrors, {})
     invUtils.flush()
     active = true
     updateDisplay()
     if transferErrors[peripheral.getName(storage)] then
         return false
     end
-    return true
+    while true do
+        local tanks = formation.tanks()
+        if next(tanks) == nil then
+            return true
+        end
+        sleep(POLL_DELAY)
+    end
 end
 
 local function isEmpty()
-    local busInv = {}
-    local fluidInv = {}
-    invUtils.enqueue(function () busInv = bus.list() end)
----@diagnostic disable-next-line: undefined-field
-    invUtils.enqueue(function () fluidInv = bridge.listFluid() end)
-    invUtils.flush()
+    local busInv = bus.list()
     for slot, item in pairs(ncSlotsCache) do
         busInv[slot] = nil
     end
-    return next(busInv) == nil and next(fluidInv) == nil
+    return not redstone.getInput(peripheral.getName(craftNet)) and next(busInv) == nil
 end
 
 local function isActive()
@@ -154,8 +154,7 @@ local function unloadnc()
     if not busSlot then
         error("Failed to collect input bus")
     end
-    print("pushing")
-    storage.pushItems(peripheral.getName(bridge), busSlot, 1)
+    storage.pushItems(peripheral.getName(formation), busSlot, 1)
     while true do
         local e, side = os.pullEvent("peripheral")
         if side == "back" then break end
@@ -263,11 +262,9 @@ local function run()
     end
 end
 
-printError("THIS IS BROKEN UNTIL ADVANCEDPERIPHERALS FIXES THE FIRST TANK ONLY BUG")
-
 sleep(1)
 print("Connecting periphrals...")
-storage, craftNet, bridge, bus = getPeripherals()
+storage, craftNet, formation, bus = getPeripherals()
 displaySide = getDisplaySide()
 if displaySide then
     print("Display found: "..displaySide)

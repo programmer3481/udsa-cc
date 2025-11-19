@@ -13,6 +13,9 @@ local currentMachineName = ""
 local currentMachineType = ""
 local ncSlotsCache = {}
 
+local pollTimer = nil
+local pollLock = false
+
 local displaySide
 local active = false
 
@@ -152,7 +155,7 @@ local function loadnc()
     ncSlotsCache = currentMachine.list()
 end
 
-local function load()
+local function load() -- return true if everthing was transferred
     if not currentMachine then
         error("Recieved command to load items to machine, no machine is present")
     end
@@ -164,11 +167,12 @@ local function load()
     local transferErrors = {}
     invUtils.enqueueMoveSlots(storage, toMove, currentMachine, {}, transferErrors)
     invUtils.flush()
-    if transferErrors["back"] then
-        error("Failed to insert items/fluids into machine")
-    end
     active = true
     updateDisplay()
+    if transferErrors["back"] then
+        return false
+    end
+    return true
 end
 
 local function isEmpty(machineInv)
@@ -202,27 +206,6 @@ local function isActive(machineInv) -- also flushes output
     return true
 end
 
-local function waitInactive()
-    if not currentMachine then
-        error("Machine connection error")
-    end
-    while active do
-        sleep(POLL_DELAY)
----@diagnostic disable-next-line: undefined-field
-        local machineInv = {}
-        invUtils.enqueueScanInv(currentMachine, machineInv)
-        invUtils.flush()
-        for slot, item in pairs(ncSlotsCache) do
-            machineInv[1][slot] = nil
-        end
-        active = isActive(machineInv)
-        if currentMachineType ~= "" then
-            active = active or not isEmpty(machineInv)
-        end
-        updateDisplay()
-    end
-end
-
 local function unloadnc()
     redstone.setOutput("top", true)
     while true do
@@ -241,78 +224,7 @@ local function unloadnc()
     updateDisplay()
 end
 
-local function waitMessage(timeout)
-    local timer = os.startTimer(timeout)
-    local doLoad = false
-    while true do
-        local e = {os.pullEvent()}
-        if e[1] == "timer" and e[2] == timer then
-            return doLoad
-        elseif e[1] == "modem_message" and e[2] == peripheral.getName(craftNet) and e[3] == CRAFTNET_SEND then
-            local msg = strings.split(e[5], "%s+")
-            if msg[1] == "cn" and msg[2] == "load" and msg[3] == id then
-                doLoad = true
-            end
-        end
-    end
-end
-
-local function handleMessage(msg)
-    if msg[1] == "cn" and msg[2] == "ready" then
-        print("Resetting...")
-        if peripheral.hasType("back", "inventory") then
-            print("Unloading previously loaded machine")
-            load()
-            waitInactive()
-            unloadnc()
-        end
-        craftNet.transmit(CRAFTNET_RECIEVE, 0, "cn ready "..id)
-    elseif msg[1] == "cn" and msg[3] == id then
-        if msg[2] == "loadnc" then
-            loadnc()
-            print("Machine loaded: "..currentMachineName)
-            craftNet.transmit(CRAFTNET_RECIEVE, 0, "cn loadnc "..id)
-        elseif msg[2] == "load" then
-            load()
-            if not currentMachine then error("Machine connection error") end
-            local availableSent = false
-            while active do
-                local doLoad = false
-                parallel.waitForAll(function () doLoad = waitMessage(POLL_DELAY) end,
-                function ()
-                    local machineInv = {}
-                    invUtils.enqueueScanInv(currentMachine, machineInv)
-                    invUtils.flush()
-                    for slot, item in pairs(ncSlotsCache) do
-                        machineInv[1][slot] = nil
-                    end
-
-                    local empty = isEmpty(machineInv)
-                    if empty and not availableSent then
-                        craftNet.transmit(CRAFTNET_RECIEVE, 0, "cn available "..id)
-                        availableSent = true
-                    end
-
-                    active = isActive(machineInv) or not empty
-                    updateDisplay()
-                end)
-
-                if doLoad then
-                    load()
-                    availableSent = false
-                end
-            end
-            craftNet.transmit(CRAFTNET_RECIEVE, 0, "cn load "..id)
-        elseif msg[2] == "unloadnc" then
-            unloadnc()
-            craftNet.transmit(CRAFTNET_RECIEVE, 0, "cn unloadnc "..id)
-        end
-    end
-end
-
-local function run()
-    craftNet.open(CRAFTNET_SEND)
-
+local function ready()
     redstone.setOutput("top", false)
     redstone.setOutput("front", false)
     if peripheral.hasType("back", "inventory") then
@@ -320,13 +232,109 @@ local function run()
         if not currentMachine then
             error("Machine connection error")
         end
-        ncSlotsCache = currentMachine.list()
-        load()
-        waitInactive()
+        print("Unloading previously loaded machine")
+---@diagnostic disable-next-line: undefined-field
+        currentMachine.setWorkingEnabled(false)
+---@diagnostic disable-next-line: undefined-field
+        while currentMachine.isActive() do
+            sleep(POLL_DELAY)
+        end
+        local machineInv = {}
+        invUtils.enqueueScanInv(currentMachine, machineInv)
+        invUtils.flush()
+        invUtils.enqueueMoveSlots(currentMachine, machineInv, output, {}, {})
+        invUtils.flush()
         unloadnc()
     end
-
     updateDisplay()
+end
+
+local function getPollLock()
+    while true do
+        if not pollLock then
+            pollLock = true
+            return
+        end
+        sleep(0)
+    end
+end
+
+local function handleMessage(msg)
+    if msg[1] == "cn" and msg[2] == "ready" then
+        print("Resetting...")
+        ready()
+        craftNet.transmit(CRAFTNET_RECIEVE, 0, "cn ready "..id)
+    elseif msg[1] == "cn" and msg[3] == id then
+        if msg[2] == "loadnc" then
+            loadnc()
+            print("Machine loaded: "..currentMachineName)
+            craftNet.transmit(CRAFTNET_RECIEVE, 0, "cn loadnc "..id)
+        elseif msg[2] == "load" then
+            getPollLock()
+            if pollTimer ~= nil then os.cancelTimer(pollTimer) pollTimer = nil end
+            if not currentMachine then error("Machine connection error") end
+            while true do
+                local storageEmpty = load()
+                local machineInv = {}
+                invUtils.enqueueScanInv(currentMachine, machineInv)
+                invUtils.flush()
+                for slot, item in pairs(ncSlotsCache) do
+                    machineInv[1][slot] = nil
+                end
+
+                local empty = isEmpty(machineInv) and storageEmpty
+                active = isActive(machineInv) or not empty
+                updateDisplay()
+
+                if empty then
+                    craftNet.transmit(CRAFTNET_RECIEVE, 0, "cn available "..id)
+                    if not active then
+                        craftNet.transmit(CRAFTNET_RECIEVE, 0, "cn load "..id)
+                    else -- empty but active
+                        pollTimer = os.startTimer(POLL_DELAY)
+                    end
+                    break
+                end
+
+                sleep(POLL_DELAY)
+            end
+            pollLock = false
+        elseif msg[2] == "unloadnc" then
+            unloadnc()
+            craftNet.transmit(CRAFTNET_RECIEVE, 0, "cn unloadnc "..id)
+        end
+    end
+end
+
+local function pollMachineService()
+    while true do
+        local _, timer = os.pullEvent("timer")
+        if timer == pollTimer and not pollLock then -- if poll locked then no need to poll
+            pollLock = true
+            pollTimer = nil
+            if not currentMachine then error("Machine connection error") end
+            local machineInv = {}
+            invUtils.enqueueScanInv(currentMachine, machineInv)
+            invUtils.flush()
+            for slot, item in pairs(ncSlotsCache) do
+                machineInv[1][slot] = nil
+            end
+            active = isActive(machineInv)
+            updateDisplay()
+            if not active then
+                craftNet.transmit(CRAFTNET_RECIEVE, 0, "cn load "..id)
+            else
+                pollTimer = os.startTimer(POLL_DELAY)
+            end
+            pollLock = false
+        end
+    end
+end
+
+local function run()
+    ready()
+
+    craftNet.open(CRAFTNET_SEND)
     print("Setup complete, awaiting commands...")
     craftNet.transmit(CRAFTNET_RECIEVE, 0, "cn ready "..id)
     while true do
@@ -342,6 +350,8 @@ local function run()
     end
 end
 
+
+
 sleep(1)
 print("Loading machine definition list...")
 machines, machineCount = getMachines()
@@ -356,4 +366,4 @@ print("Getting CraftNet processor ID...")
 id = getId()
 print("Processor ID: "..id)
 
-run()
+parallel.waitForAll(run, pollMachineService)

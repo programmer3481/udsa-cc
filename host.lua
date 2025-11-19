@@ -23,6 +23,7 @@ local recipeTypes
 local recipeTypeCount
 -- 'dummy processors', basically single recipeType processor with no computer
 local fakeProcessors -- processor id - recipeType
+local slotCovers -- "blacklisted items", set
 local craftNet
 local idleCycles
 local recieveQueue = {}
@@ -80,6 +81,23 @@ local function getFakeProcessors()
     return fakeProcessors
 end
 
+local function getSlotCovers()
+    local slotCoversFile = fs.open(shell.resolve("slotCovers.txt"), "r")
+    if not slotCoversFile then
+        print("Could not read slotCovers list")
+        return {}
+    end
+    local slotCovers = {}
+    while true do
+        local line = slotCoversFile.readLine()
+        if not line then break end
+        if line:find("^%s*$") == nil then
+            slotCovers[line] = true
+        end
+    end
+    return slotCovers
+end
+
 local function getCraftNet()
     local craftNet
     for i, dir in ipairs({"left", "right", "back", "bottom", "top"}) do
@@ -93,21 +111,9 @@ local function getCraftNet()
     return craftNet
 end
 
-local function readMessages(timeout)
-    local timer = os.startTimer(timeout)
-    while true do
-        local e = {os.pullEvent()}
-        if e[1] == "timer" and e[2] == timer then
-            return
-        elseif e[1] == "modem_message" and e[2] == peripheral.getName(craftNet) and e[3] == CRAFTNET_RECIEVE then
-            table.insert(recieveQueue, e[5])
-        end
-    end
-end
-
 local function handleMessages()
-    for i, recieved in ipairs(recieveQueue) do
-        local msg = strings.split(recieved, "%s+")
+    while #recieveQueue > 0 do
+        local msg = strings.split(table.remove(recieveQueue), "%s+")
         if msg[1] == "cn" then
             if msg[2] == "ready" or msg[2] == "unloadnc" then
                 if msg[2] == "ready" then
@@ -127,7 +133,6 @@ local function handleMessages()
             end
         end
     end
-    recieveQueue = {}
 end
 
 local function getOrCacheInventoryId(peripheralName)
@@ -154,6 +159,14 @@ end
 
 local function getRecipeTypeId(id) -- removes + (use like asm+ for more patprovs)
     return string.gsub(id, "+", "")
+end
+
+local function getNcId(item)
+    local id = item.name
+    if item.nbt then
+        id = id.."|"..item.nbt
+    end
+    return id
 end
 
 local function scanInventories()
@@ -197,6 +210,11 @@ local function scanInventories()
     scannedNc[1] = nil
     for inputId, input in pairs(scannedInputs) do
         input[1][1] = nil
+        for slot, item in pairs(input[1]) do
+            if slotCovers[getNcId(item)] then
+                input[1][slot] = nil
+            end
+        end
         if next(input[1]) == nil and next(input[2]) == nil then
             scannedInputs[inputId] = nil
         end
@@ -207,18 +225,10 @@ local function scanInventories()
     for fakeProcessorId, processorScan in pairs(scannedFakeActive) do
         processorScan[1][1] = nil
         if next(processorScan[1]) == nil and next(processorScan[2]) == nil then
-            processors[fakeProcessorId].state = PROCESSOR_STATE.idle
+            processors[fakeProcessorId].state = PROCESSOR_STATE.available
         end
     end
     return scannedInputs, scannedNc, scannedPendingNc
-end
-
-local function getNcId(item)
-    local id = item.name
-    if item.nbt then
-        id = id.."|"..item.nbt
-    end
-    return id
 end
 
 local function getNcSlots(ncScan)
@@ -320,7 +330,7 @@ local function loop()
     -- 2. request recipe types
     for inputId, input in pairs(scannedInputs) do
         local recipeTypeId = getRecipeTypeId(inputId)
-        if not availableRecipeTypes[recipeTypeId] and 
+        if not availableRecipeTypes[recipeTypeId] and
         (not recipeTypes[recipeTypeId].limit or not loadedRecipeTypeCount[recipeTypeId] or
             loadedRecipeTypeCount[recipeTypeId] < recipeTypes[recipeTypeId].limit) then
             waitedProcessorGroups[recipeTypes[recipeTypeId].processor] = true
@@ -345,7 +355,7 @@ local function loop()
     for processorId, processor in pairs(processors) do
         local waitedOn = false
         for processorGroup, b in pairs(waitedProcessorGroups) do
-            if processor.state == PROCESSOR_STATE.idle and not processor.fake and processorId:find("^"..processorGroup) ~= nil then
+            if processor.state == PROCESSOR_STATE.idle and processorId:find("^"..processorGroup) ~= nil then
                 waitedOn = true
                 processor.idleCycles = processor.idleCycles + 1
                 if processor.idleCycles > PROCESSOR_IDLE_CYCLE_LIMIT then
@@ -383,19 +393,16 @@ end
 local function run()
     craftNet.open(CRAFTNET_RECIEVE)
     craftNet.transmit(CRAFTNET_SEND, CRAFTNET_RECIEVE, "cn ready")
-    readMessages(2)
-    handleMessages()
-
     idleCycles = 0
+    sleep(2)
     while true do
         handleMessages()
-        local wait
+        loop()
         if idleCycles > SLEEP_IDLE_CYCLE then
-            wait = IDLE_POLL_DELAY
+            sleep(IDLE_POLL_DELAY)
         else
-            wait = POLL_DELAY
+            sleep(POLL_DELAY)
         end
-        parallel.waitForAll(loop, function() readMessages(wait) end)
     end
 end
 
@@ -407,7 +414,17 @@ for recipeName, recipeType in pairs(recipeTypes) do
 end
 print(recipeTypeCount.." recipeTypes loaded")
 fakeProcessors = getFakeProcessors()
+slotCovers = getSlotCovers()
 craftNet = getCraftNet()
 print("CraftNet connection found: "..peripheral.getName(craftNet))
 
-run()
+parallel.waitForAll(run,
+    function()
+        while true do
+            local e = {os.pullEvent("modem_message")}
+            if e[2] == peripheral.getName(craftNet) and e[3] == CRAFTNET_RECIEVE then
+                table.insert(recieveQueue, e[5])
+            end
+        end
+    end
+)

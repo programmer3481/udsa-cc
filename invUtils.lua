@@ -24,6 +24,15 @@ local function wrapInvSafe(name)
     -- make it work for any target inventory, also return nil instead of error when target peripheral doesn't exist
     local old = wrappedPeripheral.pushItems
     wrappedPeripheral.pushItems = function(toName, fromSlot, limit, toSlot)
+        if peripheral.hasType(toName, "meBridge") then
+            local bridge = peripheral.wrap(toName)
+            if not bridge then return nil end
+---@diagnostic disable-next-line: undefined-field
+            local success, result = pcall(bridge.importItemFromPeripheral, {fromSlot = fromSlot - 1, count = limit}, peripheral.getName(wrappedPeripheral))
+            if success then return result
+            elseif result--[[@as string]]:find("valid side$") ~= nil then return nil
+            else return error(result, 0) end
+        end
         if peripheral.hasType(toName, "inventory") == false then
             if toSlot then error("To slot out of range") else return 0 end
         end
@@ -44,6 +53,15 @@ local function wrapInvSafe(name)
     end
     local old = wrappedPeripheral.pushFluid
     wrappedPeripheral.pushFluid = function (toName, limit, fluidName)
+        if peripheral.hasType(toName, "meBridge") then
+            local bridge = peripheral.wrap(toName)
+            if not bridge then return nil end
+---@diagnostic disable-next-line: undefined-field
+            local success, result = pcall(bridge.importFluidFromPeripheral, {name = fluidName, count = limit}, peripheral.getName(wrappedPeripheral))
+            if success then return result
+            elseif result--[[@as string]]:find("valid side$") ~= nil then return nil
+            else return error(result, 0) end
+        end
         if peripheral.hasType(toName, "fluid_storage") == false then return 0 end
         local success, result = pcall(old, toName, limit, fluidName)
         if success then return result
@@ -52,6 +70,15 @@ local function wrapInvSafe(name)
     end
     local old = wrappedPeripheral.pullFluid
     wrappedPeripheral.pullFluid = function (fromName, limit, fluidName)
+        if peripheral.hasType(fromName, "meBridge") then
+            local bridge = peripheral.wrap(fromName)
+            if not bridge then return nil end
+---@diagnostic disable-next-line: undefined-field
+            local success, result = pcall(bridge.exportFluidToPeripheral, {name = fluidName, count = limit}, peripheral.getName(wrappedPeripheral))
+            if success then return result
+            elseif result--[[@as string]]:find("valid side$") ~= nil then return nil
+            else return error(result, 0) end
+        end
         if peripheral.hasType(fromName, "fluid_storage") == false then return 0 end
         local success, result = pcall(old, fromName, limit, fluidName)
         if success then return result
